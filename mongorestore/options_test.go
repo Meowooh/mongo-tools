@@ -14,7 +14,38 @@ import (
 	"go.mongodb.org/mongo-driver/x/mongo/driver/connstring"
 
 	"testing"
+	"time"
 )
+
+func TestOOMRetryTimeoutOptionParsing(t *testing.T) {
+	testtype.SkipUnlessTestType(t, testtype.UnitTestType)
+
+	Convey("Parsing the OOM retry timeout", t, func() {
+		Convey("uses a 15 minute default", func() {
+			opts, err := ParseOptions([]string{}, "", "")
+			So(err, ShouldBeNil)
+			So(opts.OutputOptions.OOMRetryTimeout, ShouldEqual, 15*time.Minute)
+		})
+
+		Convey("accepts a custom Go duration", func() {
+			opts, err := ParseOptions([]string{"--oomRetryTimeout=45m"}, "", "")
+			So(err, ShouldBeNil)
+			So(opts.OutputOptions.OOMRetryTimeout, ShouldEqual, 45*time.Minute)
+		})
+
+		Convey("accepts zero as no timeout", func() {
+			opts, err := ParseOptions([]string{"--oomRetryTimeout=0"}, "", "")
+			So(err, ShouldBeNil)
+			So(opts.OutputOptions.OOMRetryTimeout, ShouldEqual, time.Duration(0))
+		})
+
+		Convey("rejects a negative duration", func() {
+			_, err := ParseOptions([]string{"--oomRetryTimeout=-1s"}, "", "")
+			So(err, ShouldNotBeNil)
+			So(err.Error(), ShouldEqual, "cannot specify a negative OOM retry timeout")
+		})
+	})
+}
 
 func TestWriteConcernOptionParsing(t *testing.T) {
 	testtype.SkipUnlessTestType(t, testtype.UnitTestType)

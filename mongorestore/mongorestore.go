@@ -9,6 +9,7 @@ package mongorestore
 
 import (
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -85,6 +86,8 @@ type MongoRestore struct {
 
 	// boolean set if termination signal received; false by default
 	terminate bool
+	ctx       context.Context
+	cancel    context.CancelFunc
 
 	// Reader to take care of BSON input if not reading from the local filesystem.
 	// This is initialized to os.Stdin if unset.
@@ -112,6 +115,7 @@ func New(opts Options) (*MongoRestore, error) {
 	progressManager := progress.NewBarWriter(log.Writer(0), progressBarWaitTime, progressBarLength, true)
 	progressManager.Start()
 
+	restoreCtx, cancel := context.WithCancel(context.Background())
 	restore := &MongoRestore{
 		ToolOptions:     opts.ToolOptions,
 		OutputOptions:   opts.OutputOptions,
@@ -122,6 +126,8 @@ func New(opts Options) (*MongoRestore, error) {
 		ProgressManager: progressManager,
 		serverVersion:   serverVersion,
 		terminate:       false,
+		ctx:             restoreCtx,
+		cancel:          cancel,
 		indexCatalog:    idx.NewIndexCatalog(),
 	}
 
@@ -142,6 +148,9 @@ func New(opts Options) (*MongoRestore, error) {
 
 // Close ends any connections and cleans up other internal state.
 func (restore *MongoRestore) Close() {
+	if restore.cancel != nil {
+		restore.cancel()
+	}
 	restore.SessionProvider.Close()
 	barWriter, ok := restore.ProgressManager.(*progress.BarWriter)
 	if ok { // should always be ok
@@ -690,6 +699,16 @@ func (restore *MongoRestore) getArchiveReader() (rc io.ReadCloser, err error) {
 	return rc, nil
 }
 
+func (restore *MongoRestore) retryContext() context.Context {
+	if restore.ctx == nil {
+		return context.Background()
+	}
+	return restore.ctx
+}
+
 func (restore *MongoRestore) HandleInterrupt() {
 	restore.terminate = true
+	if restore.cancel != nil {
+		restore.cancel()
+	}
 }
