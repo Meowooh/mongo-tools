@@ -178,14 +178,18 @@ func (bb *BufferedBulkInserter) addModel(modelSize int, model mongo.WriteModel) 
 
 	if bb.retryPolicy != nil && bb.docCount > 0 && bb.byteCount+modelSize > bb.byteLimit {
 		result, err = bb.Flush()
-		if err != nil {
-			return result, err
-		}
 	}
 
+	// Always buffer the current model, even if the pre-flush failed: the
+	// caller may treat the flush error as ignorable (e.g. duplicate keys)
+	// and keep going, and this document must not be silently dropped.
 	bb.docCount++
 	bb.byteCount += modelSize
 	bb.writeModels = append(bb.writeModels, model)
+
+	if err != nil {
+		return result, err
+	}
 
 	if bb.docCount >= bb.docLimit || (bb.retryPolicy == nil && bb.byteCount >= bb.byteLimit) {
 		return bb.Flush()

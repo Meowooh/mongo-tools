@@ -255,3 +255,56 @@ func TestDefaultBulkWriteRetryDelay(t *testing.T) {
 		}
 	})
 }
+
+func TestBufferedBulkInserterPreFlushKeepsPendingDoc(t *testing.T) {
+	testtype.SkipUnlessTestType(t, testtype.UnitTestType)
+
+	Convey("a failed pre-flush must not drop the document that triggered it", t, func() {
+		// Non-retryable but caller-ignorable error, like an all-duplicate-key
+		// BulkWriteException during a resumed restore.
+		dupErr := mongo.BulkWriteException{
+			WriteErrors: []mongo.BulkWriteError{
+				{WriteError: mongo.WriteError{Code: ErrDuplicateKeyCode, Message: "E11000 duplicate key"}},
+			},
+		}
+		shouldRetry := func(err error) bool { return false }
+
+		// Two docs sized so the second insert exceeds byteLimit and triggers
+		// the pre-flush of the first.
+		big := strings.Repeat("x", MaxBSONSize/2)
+		rawDoc, err := bson.Marshal(bson.D{{Key: "pad", Value: big}})
+		So(err, ShouldBeNil)
+
+		var calls [][]int // model counts per bulkWrite call
+		failFirst := true
+		write := func(ctx context.Context, models []mongo.WriteModel, _ ...*mongooptions.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
+			calls = append(calls, []int{len(models)})
+			if failFirst {
+				failFirst = false
+				return nil, dupErr
+			}
+			return &mongo.BulkWriteResult{InsertedCount: int64(len(models))}, nil
+		}
+
+		bb := newRetryTestBufferedBulkInserter(context.Background(), time.Minute, 1000, shouldRetry, write)
+
+		_, err = bb.InsertRaw(rawDoc)
+		So(err, ShouldBeNil)
+
+		// Second insert: pre-flush fires and fails with the ignorable error.
+		_, err = bb.InsertRaw(rawDoc)
+		So(err, ShouldResemble, error(dupErr))
+
+		// The pending (second) document must still be buffered.
+		So(bb.docCount, ShouldEqual, 1)
+
+		// Caller ignores the dup error and flushes at end of stream.
+		_, err = bb.Flush()
+		So(err, ShouldBeNil)
+
+		// Both documents reached bulkWrite exactly once each.
+		So(len(calls), ShouldEqual, 2)
+		So(calls[0][0], ShouldEqual, 1)
+		So(calls[1][0], ShouldEqual, 1)
+	})
+}
