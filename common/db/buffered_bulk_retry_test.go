@@ -147,6 +147,104 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 			So(result.InsertedCount, ShouldEqual, 1)
 			So(calls, ShouldEqual, 8)
 		})
+
+		Convey("retries only indexed OOM models and accumulates partial successes", func() {
+			calls := 0
+			var originalModels []mongo.WriteModel
+			write := func(_ context.Context, models []mongo.WriteModel, _ ...*mongooptions.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
+				calls++
+				switch calls {
+				case 1:
+					originalModels = append([]mongo.WriteModel(nil), models...)
+					So(len(models), ShouldEqual, 4)
+					return &mongo.BulkWriteResult{InsertedCount: 2}, mongo.BulkWriteException{
+						WriteErrors: []mongo.BulkWriteError{
+							{WriteError: mongo.WriteError{Index: 2, Code: 146, Message: "OOM"}},
+							{WriteError: mongo.WriteError{Index: 3, Code: 146, Message: "OOM"}},
+						},
+					}
+				case 2:
+					So(models, ShouldResemble, originalModels[2:])
+					return &mongo.BulkWriteResult{InsertedCount: 1}, mongo.BulkWriteException{
+						WriteErrors: []mongo.BulkWriteError{
+							{WriteError: mongo.WriteError{Index: 1, Code: 146, Message: "OOM"}},
+						},
+					}
+				default:
+					So(models, ShouldResemble, originalModels[3:])
+					return &mongo.BulkWriteResult{InsertedCount: 1}, nil
+				}
+			}
+
+			bb := newRetryTestBufferedBulkInserter(
+				context.Background(), time.Minute, 4, func(error) bool { return false }, write).
+				SetOrdered(false).
+				SetRetryableWriteErrorPolicy(func(err mongo.WriteError) bool { return err.Code == 146 })
+			var result *mongo.BulkWriteResult
+			var insertErr error
+			for i := 0; i < 4; i++ {
+				result, insertErr = bb.InsertRaw(rawDoc)
+				So(insertErr, ShouldBeNil)
+			}
+
+			So(result.InsertedCount, ShouldEqual, 4)
+			So(calls, ShouldEqual, 3)
+		})
+
+		Convey("an ordered retry includes unattempted models after the first write error", func() {
+			calls := 0
+			var originalModels []mongo.WriteModel
+			write := func(_ context.Context, models []mongo.WriteModel, _ ...*mongooptions.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
+				calls++
+				if calls == 1 {
+					originalModels = append([]mongo.WriteModel(nil), models...)
+					return &mongo.BulkWriteResult{InsertedCount: 1}, mongo.BulkWriteException{
+						WriteErrors: []mongo.BulkWriteError{
+							{WriteError: mongo.WriteError{Index: 1, Code: 146, Message: "OOM"}},
+						},
+					}
+				}
+				So(models, ShouldResemble, originalModels[1:])
+				return &mongo.BulkWriteResult{InsertedCount: 3}, nil
+			}
+
+			bb := newRetryTestBufferedBulkInserter(
+				context.Background(), time.Minute, 4, func(error) bool { return false }, write).
+				SetOrdered(true).
+				SetRetryableWriteErrorPolicy(func(err mongo.WriteError) bool { return err.Code == 146 })
+			var result *mongo.BulkWriteResult
+			var insertErr error
+			for i := 0; i < 4; i++ {
+				result, insertErr = bb.InsertRaw(rawDoc)
+				So(insertErr, ShouldBeNil)
+			}
+
+			So(result.InsertedCount, ShouldEqual, 4)
+			So(calls, ShouldEqual, 2)
+		})
+
+		Convey("does not retry a bulk response containing a non-retryable write error", func() {
+			bulkErr := mongo.BulkWriteException{WriteErrors: []mongo.BulkWriteError{
+				{WriteError: mongo.WriteError{Index: 0, Code: 146, Message: "OOM"}},
+				{WriteError: mongo.WriteError{Index: 1, Code: ErrDuplicateKeyCode, Message: "duplicate"}},
+			}}
+			calls := 0
+			write := func(_ context.Context, _ []mongo.WriteModel, _ ...*mongooptions.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
+				calls++
+				return &mongo.BulkWriteResult{}, bulkErr
+			}
+
+			bb := newRetryTestBufferedBulkInserter(
+				context.Background(), time.Minute, 2, func(error) bool { return false }, write).
+				SetOrdered(false).
+				SetRetryableWriteErrorPolicy(func(err mongo.WriteError) bool { return err.Code == 146 })
+			_, insertErr := bb.InsertRaw(rawDoc)
+			So(insertErr, ShouldBeNil)
+			_, insertErr = bb.InsertRaw(rawDoc)
+
+			So(insertErr, ShouldResemble, error(bulkErr))
+			So(calls, ShouldEqual, 1)
+		})
 	})
 }
 

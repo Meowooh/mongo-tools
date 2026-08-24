@@ -25,3 +25,11 @@ func isEloqOutOfMemoryError(err error) bool {
 		commandErr.Name == eloqOutOfMemoryName &&
 		strings.Contains(commandErr.Message, eloqOutOfMemoryTx)
 }
+
+// isEloqOutOfMemoryWriteError matches the indexed per-document error returned by TiDoc
+// when part of a bulk insert succeeded before the node reached its memory limit. Unlike a
+// CommandError, a WriteError has no code-name field, so the numeric code and transaction marker
+// identify it.
+func isEloqOutOfMemoryWriteError(err mongo.WriteError) bool {
+	return err.Code == eloqOutOfMemoryCode && strings.Contains(err.Message, eloqOutOfMemoryTx)
+}

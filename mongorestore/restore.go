@@ -510,7 +510,8 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 
 			bulk := db.NewUnorderedBufferedBulkInserter(collection, restore.OutputOptions.BulkBufferSize).
 				SetOrdered(restore.OutputOptions.MaintainInsertionOrder).
-				SetRetryPolicy(restore.retryContext(), restore.OutputOptions.OOMRetryTimeout, isEloqOutOfMemoryError)
+				SetRetryPolicy(restore.retryContext(), restore.OutputOptions.OOMRetryTimeout, isEloqOutOfMemoryError).
+				SetRetryableWriteErrorPolicy(isEloqOutOfMemoryWriteError)
 			if collectionType != "timeseries" {
 				bulk.SetBypassDocumentValidation(restore.OutputOptions.BypassDocumentValidation)
 			}

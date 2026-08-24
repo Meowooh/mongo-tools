@@ -71,6 +71,33 @@ func TestIsEloqOutOfMemoryError(t *testing.T) {
 	})
 }
 
+func TestIsEloqOutOfMemoryWriteError(t *testing.T) {
+	testtype.SkipUnlessTestType(t, testtype.UnitTestType)
+
+	targetErr := mongo.WriteError{
+		Code:    eloqOutOfMemoryCode,
+		Message: "TxError[22]: Transaction failed due to out of memory.",
+	}
+
+	Convey("The indexed Eloq out-of-memory matcher", t, func() {
+		Convey("matches the expected code and transaction marker", func() {
+			So(isEloqOutOfMemoryWriteError(targetErr), ShouldBeTrue)
+		})
+
+		Convey("requires the expected numeric code", func() {
+			err := targetErr
+			err.Code++
+			So(isEloqOutOfMemoryWriteError(err), ShouldBeFalse)
+		})
+
+		Convey("requires the Eloq transaction marker", func() {
+			err := targetErr
+			err.Message = "Transaction failed due to out of memory."
+			So(isEloqOutOfMemoryWriteError(err), ShouldBeFalse)
+		})
+	})
+}
+
 func TestHandleInterruptCancelsRetryContext(t *testing.T) {
 	testtype.SkipUnlessTestType(t, testtype.UnitTestType)
 
