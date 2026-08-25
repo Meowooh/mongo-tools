@@ -235,17 +235,18 @@ func TestBufferedBulkInserterRetryBatchBounds(t *testing.T) {
 func TestDefaultBulkWriteRetryDelay(t *testing.T) {
 	testtype.SkipUnlessTestType(t, testtype.UnitTestType)
 
-	Convey("The retry delay follows the bounded schedule with small jitter", t, func() {
+	Convey("The retry delay uses the fair retry windows", t, func() {
 		tests := []struct {
 			attempt int
 			min     time.Duration
 			max     time.Duration
 		}{
-			{0, 9 * time.Second, 11 * time.Second},
-			{1, 18 * time.Second, 22 * time.Second},
-			{2, 36 * time.Second, 44 * time.Second},
-			{3, 54 * time.Second, 60 * time.Second},
-			{8, 54 * time.Second, 60 * time.Second},
+			// attempt is zero-based, so attempts 0 through 9 are the first
+			// ten retries. The eleventh retry starts the narrower window.
+			{0, 30 * time.Second, 60 * time.Second},
+			{9, 30 * time.Second, 60 * time.Second},
+			{10, 30 * time.Second, 50 * time.Second},
+			{100, 30 * time.Second, 50 * time.Second},
 		}
 
 		for _, test := range tests {

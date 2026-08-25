@@ -257,20 +257,15 @@ func (bb *BufferedBulkInserter) flushWithRetry() (*mongo.BulkWriteResult, error)
 }
 
 func defaultBulkWriteRetryDelay(attempt int) time.Duration {
-	delay := 10 * time.Second
-	for i := 0; i < attempt && delay < time.Minute; i++ {
-		delay *= 2
-		if delay > time.Minute {
-			delay = time.Minute
-		}
+	minDelay := 30 * time.Second
+	maxDelay := 60 * time.Second
+	// attempt is zero-based. Give a bulk that has already retried ten times
+	// a narrower window so it is less likely to be overtaken by newer work.
+	if attempt >= 10 {
+		maxDelay = 50 * time.Second
 	}
 
-	jitter := delay / 10
-	delay = delay - jitter + time.Duration(rand.Int63n(int64(2*jitter)+1))
-	if delay > time.Minute {
-		return time.Minute
-	}
-	return delay
+	return minDelay + time.Duration(rand.Int63n(int64(maxDelay-minDelay)+1))
 }
 
 func waitForBulkWriteRetry(ctx context.Context, delay time.Duration) error {
