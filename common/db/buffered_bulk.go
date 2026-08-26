@@ -30,10 +30,11 @@ const (
 type bulkWriteFunc func(context.Context, []mongo.WriteModel, ...*options.BulkWriteOptions) (*mongo.BulkWriteResult, error)
 
 type bufferedBulkRetryPolicy struct {
-	ctx         context.Context
-	timeout     time.Duration
-	shouldRetry func(error) bool
-	retryDelay  func(int) time.Duration
+	ctx                   context.Context
+	timeout               time.Duration
+	shouldRetry           func(error) bool
+	shouldRetryWriteError func(mongo.WriteError) bool
+	retryDelay            func(int) time.Duration
 }
 
 // BufferedBulkInserter implements a bufio.Writer-like design for queuing up
@@ -114,6 +115,18 @@ func (bb *BufferedBulkInserter) SetRetryPolicy(
 	bb.byteLimit = MaxBSONSize - maxRetryableBulkDocuments*generatedObjectIDOverhead
 	if bb.docLimit > maxRetryableBulkDocuments {
 		bb.docLimit = maxRetryableBulkDocuments
+	}
+	return bb
+}
+
+// SetRetryableWriteErrorPolicy enables selective retries for per-model write errors accepted by
+// shouldRetryWriteError. Successful models are removed from subsequent attempts. It must be called
+// after SetRetryPolicy and before inserting documents.
+func (bb *BufferedBulkInserter) SetRetryableWriteErrorPolicy(
+	shouldRetryWriteError func(mongo.WriteError) bool,
+) *BufferedBulkInserter {
+	if bb.retryPolicy != nil {
+		bb.retryPolicy.shouldRetryWriteError = shouldRetryWriteError
 	}
 	return bb
 }
@@ -213,12 +226,19 @@ func (bb *BufferedBulkInserter) Flush() (*mongo.BulkWriteResult, error) {
 
 func (bb *BufferedBulkInserter) flushWithRetry() (*mongo.BulkWriteResult, error) {
 	policy := bb.retryPolicy
-	result, err := bb.bulkWrite(policy.ctx, bb.writeModels, bb.bulkWriteOpts)
-	if err == nil || !policy.shouldRetry(err) {
+	pendingModels := bb.writeModels
+	result, err := bb.bulkWrite(policy.ctx, pendingModels, bb.bulkWriteOpts)
+	if err == nil {
 		return result, err
 	}
 
-	lastResult, lastErr := result, err
+	nextModels, retryable := bb.modelsForRetry(pendingModels, err)
+	if !retryable {
+		return result, err
+	}
+
+	combinedResult, lastErr := mergeBulkWriteResults(nil, result), err
+	pendingModels = nextModels
 	retryCtx := policy.ctx
 	cancel := func() {}
 	if policy.timeout > 0 {
@@ -228,32 +248,98 @@ func (bb *BufferedBulkInserter) flushWithRetry() (*mongo.BulkWriteResult, error)
 
 	for attempt := 0; ; attempt++ {
 		if ctxErr := retryCtx.Err(); ctxErr != nil {
-			return lastResult, bulkWriteRetryContextError(ctxErr, policy.timeout, lastErr)
+			return combinedResult, bulkWriteRetryContextError(ctxErr, policy.timeout, lastErr)
 		}
 
 		delay := policy.retryDelay(attempt)
-		log.Logvf(log.Always, "retrying bulk write after retryable error (attempt %v, next retry in %v): %v",
-			attempt+1, delay, lastErr)
+		log.Logvf(log.Always,
+			"retrying %v model(s) after retryable bulk write error (attempt %v, next retry in %v): %v",
+			len(pendingModels), attempt+1, delay, lastErr)
 		if waitErr := waitForBulkWriteRetry(retryCtx, delay); waitErr != nil {
-			return lastResult, bulkWriteRetryContextError(waitErr, policy.timeout, lastErr)
+			return combinedResult, bulkWriteRetryContextError(waitErr, policy.timeout, lastErr)
 		}
 
-		result, err = bb.bulkWrite(retryCtx, bb.writeModels, bb.bulkWriteOpts)
+		result, err = bb.bulkWrite(retryCtx, pendingModels, bb.bulkWriteOpts)
+		combinedResult = mergeBulkWriteResults(combinedResult, result)
 		if err == nil {
-			return result, nil
+			return combinedResult, nil
 		}
 
-		retryable := policy.shouldRetry(err)
-		if retryable {
-			lastResult, lastErr = result, err
-		}
+		nextModels, retryable = bb.modelsForRetry(pendingModels, err)
 		if ctxErr := retryCtx.Err(); ctxErr != nil {
-			return result, bulkWriteRetryContextError(ctxErr, policy.timeout, lastErr)
+			return combinedResult, bulkWriteRetryContextError(ctxErr, policy.timeout, err)
 		}
 		if !retryable {
-			return result, err
+			return combinedResult, err
+		}
+		pendingModels, lastErr = nextModels, err
+	}
+}
+
+// modelsForRetry returns only models whose outcome is known to be unsuccessful. A command-level
+// retry policy cannot identify individual outcomes, so it retains the complete batch. For a
+// BulkWriteException, every reported write error must be accepted by shouldRetryWriteError.
+func (bb *BufferedBulkInserter) modelsForRetry(
+	models []mongo.WriteModel,
+	err error,
+) ([]mongo.WriteModel, bool) {
+	policy := bb.retryPolicy
+	if policy.shouldRetry(err) {
+		return models, true
+	}
+
+	bulkErr, ok := err.(mongo.BulkWriteException)
+	if !ok || policy.shouldRetryWriteError == nil || bulkErr.WriteConcernError != nil ||
+		len(bulkErr.WriteErrors) == 0 {
+		return nil, false
+	}
+
+	retryIndexes := make([]bool, len(models))
+	firstRetryIndex := len(models)
+	for _, writeErr := range bulkErr.WriteErrors {
+		if !policy.shouldRetryWriteError(writeErr.WriteError) ||
+			writeErr.Index < 0 || writeErr.Index >= len(models) {
+			return nil, false
+		}
+		retryIndexes[writeErr.Index] = true
+		if writeErr.Index < firstRetryIndex {
+			firstRetryIndex = writeErr.Index
 		}
 	}
+
+	ordered := bb.bulkWriteOpts != nil && bb.bulkWriteOpts.Ordered != nil &&
+		*bb.bulkWriteOpts.Ordered
+	if ordered {
+		// In an ordered write, models after the first error were not attempted.
+		return models[firstRetryIndex:], true
+	}
+
+	retryModels := make([]mongo.WriteModel, 0, len(bulkErr.WriteErrors))
+	for index, retry := range retryIndexes {
+		if retry {
+			retryModels = append(retryModels, models[index])
+		}
+	}
+	return retryModels, len(retryModels) > 0
+}
+
+func mergeBulkWriteResults(total, next *mongo.BulkWriteResult) *mongo.BulkWriteResult {
+	if next == nil {
+		return total
+	}
+	if total == nil {
+		total = &mongo.BulkWriteResult{UpsertedIDs: make(map[int64]interface{})}
+	}
+
+	total.InsertedCount += next.InsertedCount
+	total.MatchedCount += next.MatchedCount
+	total.ModifiedCount += next.ModifiedCount
+	total.DeletedCount += next.DeletedCount
+	total.UpsertedCount += next.UpsertedCount
+	for index, id := range next.UpsertedIDs {
+		total.UpsertedIDs[index] = id
+	}
+	return total
 }
 
 func defaultBulkWriteRetryDelay(attempt int) time.Duration {
