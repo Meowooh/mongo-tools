@@ -47,6 +47,24 @@ func TestOOMRetryTimeoutOptionParsing(t *testing.T) {
 	})
 }
 
+func TestRestoreLogPathOptionParsing(t *testing.T) {
+	testtype.SkipUnlessTestType(t, testtype.UnitTestType)
+
+	Convey("Parsing the detailed restore log path", t, func() {
+		Convey("uses mongorestore.log by default", func() {
+			opts, err := ParseOptions([]string{}, "", "")
+			So(err, ShouldBeNil)
+			So(opts.OutputOptions.RestoreLogPath, ShouldEqual, "mongorestore.log")
+		})
+
+		Convey("accepts a custom path", func() {
+			opts, err := ParseOptions([]string{"--restoreLogPath=/var/log/mongorestore.log"}, "", "")
+			So(err, ShouldBeNil)
+			So(opts.OutputOptions.RestoreLogPath, ShouldEqual, "/var/log/mongorestore.log")
+		})
+	})
+}
+
 func TestWriteConcernOptionParsing(t *testing.T) {
 	testtype.SkipUnlessTestType(t, testtype.UnitTestType)
 	Convey("Testing write concern parsing from command line and URI", t, func() {

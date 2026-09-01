@@ -132,6 +132,9 @@ github.com/rivo/uniseg
 # github.com/russross/blackfriday/v2 v2.1.0
 ## explicit
 github.com/russross/blackfriday/v2
+# github.com/sirupsen/logrus v1.9.3
+## explicit; go 1.13
+github.com/sirupsen/logrus
 # github.com/smartystreets/assertions v0.0.0-20180927180507-b2de0cb4f26d
 ## explicit
 github.com/smartystreets/assertions
@@ -233,6 +236,9 @@ golang.org/x/term
 ## explicit; go 1.17
 golang.org/x/text/transform
 golang.org/x/text/unicode/norm
+# gopkg.in/natefinch/lumberjack.v2 v2.2.1
+## explicit; go 1.13
+gopkg.in/natefinch/lumberjack.v2
 # gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 ## explicit
 gopkg.in/tomb.v2

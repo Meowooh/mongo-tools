@@ -466,15 +466,16 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 
 	collection := session.Database(dbName).Collection(colName)
 
-	documentCount := int64(0)
 	watchProgressor := progress.NewCounter(fileSize)
+	namespace := fmt.Sprintf("%v.%v", dbName, colName)
 	if restore.ProgressManager != nil {
-		name := fmt.Sprintf("%v.%v", dbName, colName)
-		restore.ProgressManager.Attach(name, watchProgressor)
-		defer restore.ProgressManager.Detach(name)
+		restore.ProgressManager.Attach(namespace, watchProgressor)
+		defer restore.ProgressManager.Detach(namespace)
 	}
 
 	maxInsertWorkers := restore.OutputOptions.NumInsertionWorkers
+	collectionProgress := newCollectionRestoreProgress(
+		restore.restoreLog, namespace, fileSize, maxInsertWorkers, watchProgressor)
 
 	docChan := make(chan bson.Raw, insertBufferFactor)
 	resultChan := make(chan Result, maxInsertWorkers)
@@ -497,7 +498,6 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 			rawBytes := make([]byte, len(doc))
 			copy(rawBytes, doc)
 			docChan <- bson.Raw(rawBytes)
-			documentCount++
 		}
 		close(docChan)
 	}()
@@ -505,12 +505,13 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 	log.Logvf(log.DebugLow, "using %v insertion workers", maxInsertWorkers)
 
 	for i := 0; i < maxInsertWorkers; i++ {
-		go func() {
+		go func(worker int) {
 			var result Result
 
 			bulk := db.NewUnorderedBufferedBulkInserter(collection, restore.OutputOptions.BulkBufferSize).
 				SetOrdered(restore.OutputOptions.MaintainInsertionOrder).
-				SetRetryPolicy(restore.retryContext(), restore.OutputOptions.OOMRetryTimeout, isEloqOutOfMemoryError)
+				SetRetryPolicy(restore.retryContext(), restore.OutputOptions.OOMRetryTimeout, isEloqOutOfMemoryError).
+				SetRetryObserver(collectionProgress.retryObserver(worker))
 			if collectionType != "timeseries" {
 				bulk.SetBypassDocumentValidation(restore.OutputOptions.BypassDocumentValidation)
 			}
@@ -522,7 +523,9 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 						return
 					}
 				}
-				result.combineWith(NewResultFromBulkResult(bulk.InsertRaw(rawDoc)))
+				insertResult := NewResultFromBulkResult(bulk.InsertRaw(rawDoc))
+				result.combineWith(insertResult)
+				collectionProgress.addResult(insertResult)
 				result.Err = db.FilterError(restore.OutputOptions.StopOnError, result.Err)
 				if result.Err != nil {
 					resultChan <- result
@@ -531,10 +534,12 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 				watchProgressor.Set(file.Pos())
 			}
 			// flush the remaining docs
-			result.combineWith(NewResultFromBulkResult(bulk.Flush()))
+			flushResult := NewResultFromBulkResult(bulk.Flush())
+			result.combineWith(flushResult)
+			collectionProgress.addResult(flushResult)
 			resultChan <- result.withErr(db.FilterError(restore.OutputOptions.StopOnError, result.Err))
 			return
-		}()
+		}(i + 1)
 
 		// sleep to prevent all threads from inserting at the same time at start
 		time.Sleep(10 * time.Millisecond)
@@ -559,5 +564,7 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 	} else if termErr != nil {
 		totalResult.Err = termErr
 	}
+	watchProgressor.Set(file.Pos())
+	collectionProgress.finish(totalResult)
 	return totalResult
 }

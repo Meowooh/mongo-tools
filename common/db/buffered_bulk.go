@@ -12,7 +12,6 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/mongodb/mongo-tools/common/log"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -28,6 +27,34 @@ const (
 )
 
 type bulkWriteFunc func(context.Context, []mongo.WriteModel, ...*options.BulkWriteOptions) (*mongo.BulkWriteResult, error)
+
+// BulkWriteRetryEventType identifies a state transition in the bulk write retry loop.
+type BulkWriteRetryEventType string
+
+const (
+	BulkWriteRetryScheduled       BulkWriteRetryEventType = "scheduled"
+	BulkWriteRetryAttemptFailed   BulkWriteRetryEventType = "attempt_failed"
+	BulkWriteRetrySucceeded       BulkWriteRetryEventType = "succeeded"
+	BulkWriteRetryTimedOut        BulkWriteRetryEventType = "timed_out"
+	BulkWriteRetryCanceled        BulkWriteRetryEventType = "canceled"
+	BulkWriteRetryNonRetryableErr BulkWriteRetryEventType = "non_retryable_error"
+)
+
+// BulkWriteRetryEvent describes one state transition in the bulk write retry loop.
+type BulkWriteRetryEvent struct {
+	Type            BulkWriteRetryEventType
+	Attempt         int
+	Documents       int
+	Bytes           int
+	Delay           time.Duration
+	AttemptDuration time.Duration
+	Elapsed         time.Duration
+	Timeout         time.Duration
+	Error           error
+}
+
+// BulkWriteRetryObserver receives retry events synchronously.
+type BulkWriteRetryObserver func(BulkWriteRetryEvent)
 
 type bufferedBulkRetryPolicy struct {
 	ctx         context.Context
@@ -50,6 +77,7 @@ type BufferedBulkInserter struct {
 	bulkWriteOpts *options.BulkWriteOptions
 	bulkWrite     bulkWriteFunc
 	retryPolicy   *bufferedBulkRetryPolicy
+	retryObserver BulkWriteRetryObserver
 	upsert        bool
 }
 
@@ -116,6 +144,22 @@ func (bb *BufferedBulkInserter) SetRetryPolicy(
 		bb.docLimit = maxRetryableBulkDocuments
 	}
 	return bb
+}
+
+// SetRetryObserver registers a callback for bulk write retry state changes.
+func (bb *BufferedBulkInserter) SetRetryObserver(observer BulkWriteRetryObserver) *BufferedBulkInserter {
+	bb.retryObserver = observer
+	return bb
+}
+
+func (bb *BufferedBulkInserter) notifyRetryObserver(event BulkWriteRetryEvent) {
+	if bb.retryObserver == nil {
+		return
+	}
+	event.Documents = bb.docCount
+	event.Bytes = bb.byteCount
+	event.Timeout = bb.retryPolicy.timeout
+	bb.retryObserver(event)
 }
 
 // throw away the old bulk and init a new one
@@ -226,34 +270,89 @@ func (bb *BufferedBulkInserter) flushWithRetry() (*mongo.BulkWriteResult, error)
 	}
 	defer cancel()
 
-	for attempt := 0; ; attempt++ {
+	retryStarted := time.Now()
+	for attempt := 1; ; attempt++ {
 		if ctxErr := retryCtx.Err(); ctxErr != nil {
-			return lastResult, bulkWriteRetryContextError(ctxErr, policy.timeout, lastErr)
+			finalErr := bulkWriteRetryContextError(ctxErr, policy.timeout, lastErr)
+			bb.notifyRetryObserver(BulkWriteRetryEvent{
+				Type:    bulkWriteRetryContextEventType(ctxErr),
+				Attempt: attempt - 1,
+				Elapsed: time.Since(retryStarted),
+				Error:   finalErr,
+			})
+			return lastResult, finalErr
 		}
 
-		delay := policy.retryDelay(attempt)
-		log.Logvf(log.Always, "retrying bulk write after retryable error (attempt %v, next retry in %v): %v",
-			attempt+1, delay, lastErr)
+		delay := policy.retryDelay(attempt - 1)
+		bb.notifyRetryObserver(BulkWriteRetryEvent{
+			Type:    BulkWriteRetryScheduled,
+			Attempt: attempt,
+			Delay:   delay,
+			Elapsed: time.Since(retryStarted),
+			Error:   lastErr,
+		})
 		if waitErr := waitForBulkWriteRetry(retryCtx, delay); waitErr != nil {
-			return lastResult, bulkWriteRetryContextError(waitErr, policy.timeout, lastErr)
+			finalErr := bulkWriteRetryContextError(waitErr, policy.timeout, lastErr)
+			bb.notifyRetryObserver(BulkWriteRetryEvent{
+				Type:    bulkWriteRetryContextEventType(waitErr),
+				Attempt: attempt,
+				Elapsed: time.Since(retryStarted),
+				Error:   finalErr,
+			})
+			return lastResult, finalErr
 		}
 
+		attemptStarted := time.Now()
 		result, err = bb.bulkWrite(retryCtx, bb.writeModels, bb.bulkWriteOpts)
 		if err == nil {
+			bb.notifyRetryObserver(BulkWriteRetryEvent{
+				Type:            BulkWriteRetrySucceeded,
+				Attempt:         attempt,
+				AttemptDuration: time.Since(attemptStarted),
+				Elapsed:         time.Since(retryStarted),
+			})
 			return result, nil
 		}
 
 		retryable := policy.shouldRetry(err)
 		if retryable {
 			lastResult, lastErr = result, err
+			bb.notifyRetryObserver(BulkWriteRetryEvent{
+				Type:            BulkWriteRetryAttemptFailed,
+				Attempt:         attempt,
+				AttemptDuration: time.Since(attemptStarted),
+				Elapsed:         time.Since(retryStarted),
+				Error:           err,
+			})
 		}
 		if ctxErr := retryCtx.Err(); ctxErr != nil {
-			return result, bulkWriteRetryContextError(ctxErr, policy.timeout, lastErr)
+			finalErr := bulkWriteRetryContextError(ctxErr, policy.timeout, lastErr)
+			bb.notifyRetryObserver(BulkWriteRetryEvent{
+				Type:    bulkWriteRetryContextEventType(ctxErr),
+				Attempt: attempt,
+				Elapsed: time.Since(retryStarted),
+				Error:   finalErr,
+			})
+			return result, finalErr
 		}
 		if !retryable {
+			bb.notifyRetryObserver(BulkWriteRetryEvent{
+				Type:            BulkWriteRetryNonRetryableErr,
+				Attempt:         attempt,
+				AttemptDuration: time.Since(attemptStarted),
+				Elapsed:         time.Since(retryStarted),
+				Error:           err,
+			})
 			return result, err
 		}
 	}
+}
+
+func bulkWriteRetryContextEventType(err error) BulkWriteRetryEventType {
+	if err == context.DeadlineExceeded {
+		return BulkWriteRetryTimedOut
+	}
+	return BulkWriteRetryCanceled
 }
 
 func defaultBulkWriteRetryDelay(attempt int) time.Duration {

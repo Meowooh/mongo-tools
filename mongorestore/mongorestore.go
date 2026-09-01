@@ -53,6 +53,7 @@ type MongoRestore struct {
 
 	SessionProvider *db.SessionProvider
 	ProgressManager progress.Manager
+	restoreLog      *restoreLogger
 
 	TargetDirectory string
 
@@ -108,7 +109,20 @@ func New(opts Options) (*MongoRestore, error) {
 
 	serverVersion, err := provider.ServerVersionArray()
 	if err != nil {
+		provider.Close()
 		return nil, fmt.Errorf("error getting server version: %v", err)
+	}
+	isMongos, err := provider.IsMongos()
+	if err != nil {
+		provider.Close()
+		return nil, err
+	}
+	isAtlasProxy := provider.IsAtlasProxy()
+
+	restoreLog, err := newRestoreLogger(opts.OutputOptions.RestoreLogPath)
+	if err != nil {
+		provider.Close()
+		return nil, fmt.Errorf("error opening restore log: %v", err)
 	}
 
 	// start up the progress bar manager
@@ -124,23 +138,24 @@ func New(opts Options) (*MongoRestore, error) {
 		TargetDirectory: opts.TargetDirectory,
 		SessionProvider: provider,
 		ProgressManager: progressManager,
+		restoreLog:      restoreLog,
 		serverVersion:   serverVersion,
+		isMongos:        isMongos,
+		isAtlasProxy:    isAtlasProxy,
 		terminate:       false,
 		ctx:             restoreCtx,
 		cancel:          cancel,
 		indexCatalog:    idx.NewIndexCatalog(),
 	}
 
-	restore.isMongos, err = restore.SessionProvider.IsMongos()
-	if err != nil {
-		return nil, err
-	}
 	if restore.isMongos {
 		log.Logv(log.DebugLow, "restoring to a sharded system")
 	}
-	restore.isAtlasProxy = restore.SessionProvider.IsAtlasProxy()
 	if restore.isAtlasProxy {
 		log.Logv(log.DebugLow, "restoring to a MongoDB Atlas free or shared cluster")
+	}
+	if restore.restoreLog != nil {
+		restore.restoreLog.logger.Info("mongorestore detailed logging started")
 	}
 
 	return restore, nil
@@ -155,6 +170,9 @@ func (restore *MongoRestore) Close() {
 	barWriter, ok := restore.ProgressManager.(*progress.BarWriter)
 	if ok { // should always be ok
 		barWriter.Stop()
+	}
+	if restore.restoreLog != nil {
+		_ = restore.restoreLog.Close()
 	}
 }
 

@@ -51,6 +51,7 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 		Convey("retries the same buffered models until the write succeeds", func() {
 			calls := 0
 			var firstModel mongo.WriteModel
+			var retryEvents []BulkWriteRetryEvent
 			write := func(ctx context.Context, models []mongo.WriteModel, _ ...*mongooptions.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
 				calls++
 				_, hasDeadline := ctx.Deadline()
@@ -68,6 +69,9 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 			}
 
 			bb := newRetryTestBufferedBulkInserter(context.Background(), time.Minute, 1, shouldRetry, write)
+			bb.SetRetryObserver(func(event BulkWriteRetryEvent) {
+				retryEvents = append(retryEvents, event)
+			})
 			result, insertErr := bb.InsertRaw(rawDoc)
 
 			So(insertErr, ShouldBeNil)
@@ -76,6 +80,16 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 			So(bb.docCount, ShouldEqual, 0)
 			So(bb.byteCount, ShouldEqual, 0)
 			So(len(bb.writeModels), ShouldEqual, 0)
+			So(len(retryEvents), ShouldEqual, 4)
+			So(retryEvents[0].Type, ShouldEqual, BulkWriteRetryScheduled)
+			So(retryEvents[0].Attempt, ShouldEqual, 1)
+			So(retryEvents[0].Documents, ShouldEqual, 1)
+			So(retryEvents[0].Bytes, ShouldEqual, len(rawDoc))
+			So(retryEvents[1].Type, ShouldEqual, BulkWriteRetryAttemptFailed)
+			So(retryEvents[2].Type, ShouldEqual, BulkWriteRetryScheduled)
+			So(retryEvents[2].Attempt, ShouldEqual, 2)
+			So(retryEvents[3].Type, ShouldEqual, BulkWriteRetrySucceeded)
+			So(retryEvents[3].Attempt, ShouldEqual, 2)
 		})
 
 		Convey("does not retry an error rejected by the policy", func() {
@@ -97,6 +111,7 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 
 		Convey("stops at the retry deadline and preserves the last retryable error", func() {
 			calls := 0
+			var retryEvents []BulkWriteRetryEvent
 			write := func(_ context.Context, _ []mongo.WriteModel, _ ...*mongooptions.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
 				calls++
 				return &mongo.BulkWriteResult{}, retryErr
@@ -104,6 +119,9 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 
 			bb := newRetryTestBufferedBulkInserter(context.Background(), time.Nanosecond, 1, shouldRetry, write)
 			bb.retryPolicy.retryDelay = func(int) time.Duration { return time.Hour }
+			bb.SetRetryObserver(func(event BulkWriteRetryEvent) {
+				retryEvents = append(retryEvents, event)
+			})
 			_, insertErr := bb.InsertRaw(rawDoc)
 
 			So(insertErr, ShouldNotBeNil)
@@ -111,11 +129,13 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 			So(errors.Is(insertErr, retryErr), ShouldBeTrue)
 			So(calls, ShouldEqual, 1)
 			So(bb.docCount, ShouldEqual, 0)
+			So(retryEvents[len(retryEvents)-1].Type, ShouldEqual, BulkWriteRetryTimedOut)
 		})
 
 		Convey("stops promptly when its context is canceled", func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			calls := 0
+			var retryEvents []BulkWriteRetryEvent
 			write := func(_ context.Context, _ []mongo.WriteModel, _ ...*mongooptions.BulkWriteOptions) (*mongo.BulkWriteResult, error) {
 				calls++
 				cancel()
@@ -123,11 +143,16 @@ func TestBufferedBulkInserterRetry(t *testing.T) {
 			}
 
 			bb := newRetryTestBufferedBulkInserter(ctx, 0, 1, shouldRetry, write)
+			bb.SetRetryObserver(func(event BulkWriteRetryEvent) {
+				retryEvents = append(retryEvents, event)
+			})
 			_, insertErr := bb.InsertRaw(rawDoc)
 
 			So(errors.Is(insertErr, context.Canceled), ShouldBeTrue)
 			So(calls, ShouldEqual, 1)
 			So(bb.docCount, ShouldEqual, 0)
+			So(len(retryEvents), ShouldEqual, 1)
+			So(retryEvents[0].Type, ShouldEqual, BulkWriteRetryCanceled)
 		})
 
 		Convey("a zero timeout does not impose an attempt limit", func() {

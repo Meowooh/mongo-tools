@@ -85,6 +85,7 @@ const (
 	TempRolesCollOption            = "--tempRolesColl"
 	BulkBufferSizeOption           = "--batchSize"
 	OOMRetryTimeoutOption          = "--oomRetryTimeout"
+	RestoreLogPathOption           = "--restoreLogPath"
 	FixDottedHashedIndexesOption   = "--fixDottedHashIndex"
 )
 
@@ -109,6 +110,7 @@ type OutputOptions struct {
 	TempRolesColl            string        `long:"tempRolesColl" default:"temproles" hidden:"true"`
 	BulkBufferSize           int           `long:"batchSize" default:"1000" hidden:"true"`
 	OOMRetryTimeout          time.Duration `long:"oomRetryTimeout" default:"15m" description:"amount of time to retry an Eloq out-of-memory batch; 0 means no timeout"`
+	RestoreLogPath           string        `long:"restoreLogPath" value-name:"<filename>" default:"mongorestore.log" description:"write detailed restore progress and OOM retry logs to a rotating file"`
 	FixDottedHashedIndexes   bool          `long:"fixDottedHashIndex" description:"when enabled, all the hashed indexes on dotted fields will be created as single field ascending indexes on the destination"`
 }
 
