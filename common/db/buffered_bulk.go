@@ -24,6 +24,16 @@ const (
 
 	maxRetryableBulkDocuments = 1000
 	generatedObjectIDOverhead = 17
+
+	// OOM errors are transient while other bulk writes finish and release
+	// memory. Keep the delay short enough for a fast restore, but avoid a
+	// tight retry loop. After repeated failures, narrow the jitter window so
+	// older retries are not systematically slower than new work.
+	bulkWriteRetryInitialMinDelay = 2 * time.Second
+	bulkWriteRetryInitialMaxDelay = 20 * time.Second
+	bulkWriteRetryMatureMinDelay  = 5 * time.Second
+	bulkWriteRetryMatureMaxDelay  = 15 * time.Second
+	bulkWriteRetryMatureAttempt   = 10
 )
 
 type bulkWriteFunc func(context.Context, []mongo.WriteModel, ...*options.BulkWriteOptions) (*mongo.BulkWriteResult, error)
@@ -356,12 +366,15 @@ func bulkWriteRetryContextEventType(err error) BulkWriteRetryEventType {
 }
 
 func defaultBulkWriteRetryDelay(attempt int) time.Duration {
-	minDelay := 30 * time.Second
-	maxDelay := 60 * time.Second
-	// attempt is zero-based. Give a bulk that has already retried ten times
-	// a narrower window so it is less likely to be overtaken by newer work.
-	if attempt >= 10 {
-		maxDelay = 50 * time.Second
+	if attempt < 0 {
+		attempt = 0
+	}
+
+	minDelay := bulkWriteRetryInitialMinDelay
+	maxDelay := bulkWriteRetryInitialMaxDelay
+	if attempt >= bulkWriteRetryMatureAttempt {
+		minDelay = bulkWriteRetryMatureMinDelay
+		maxDelay = bulkWriteRetryMatureMaxDelay
 	}
 
 	return minDelay + time.Duration(rand.Int63n(int64(maxDelay-minDelay)+1))
