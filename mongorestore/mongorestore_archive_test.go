@@ -106,6 +106,7 @@ func TestMongorestoreArchiveWithOplog(t *testing.T) {
 		args := []string{
 			ArchiveOption + "=" + testArchiveWithOplog,
 			OplogReplayOption,
+			IndexAfterOption,
 			DropOption,
 		}
 		restore, err := getRestoreWithArgs(args...)

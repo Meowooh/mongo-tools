@@ -125,31 +125,18 @@ func (restore *MongoRestore) RestoreIndexes() error {
 }
 
 func (restore *MongoRestore) RestoreIndexesForNamespace(namespace *options.Namespace) error {
-	var err error
 	namespaceString := fmt.Sprintf("%s.%s", namespace.DB, namespace.Collection)
-	indexes := restore.indexCatalog.GetIndexes(namespace.DB, namespace.Collection)
-
-	for i, index := range indexes {
-		var key []string
-		for k := range index.Key.Map() {
-			key = append(key, k)
-		}
-		if len(key) == 1 && key[0] == "_id" {
-			// The _id index was created when the collection was created,
-			// so we do not build the index here.
-			indexes = append(indexes[:i], indexes[i+1:]...)
-			break
-		}
+	if restore.OutputOptions.NoIndexRestore {
+		log.Logvf(log.Always, "no post-data indexes to restore for collection %v", namespaceString)
+		return nil
+	}
+	indexes, err := restore.prepareIndexesForNamespace(namespace.DB, namespace.Collection)
+	if err != nil {
+		return err
 	}
 
-	if len(indexes) > 0 && !restore.OutputOptions.NoIndexRestore {
+	if len(indexes) > 0 {
 		log.Logvf(log.Always, "restoring indexes for collection %v from metadata", namespaceString)
-		if restore.OutputOptions.ConvertLegacyIndexes {
-			indexes = restore.convertLegacyIndexes(indexes, namespaceString)
-		}
-		if restore.OutputOptions.FixDottedHashedIndexes {
-			fixDottedHashedIndexes(indexes)
-		}
 		for _, index := range indexes {
 			log.Logvf(log.Always, "index: %#v", index)
 		}
@@ -378,6 +365,11 @@ func (restore *MongoRestore) RestoreIntent(intent *intents.Intent) Result {
 		log.Logvf(log.Info, "collection %v already exists - skipping collection create", intent.Namespace())
 	}
 
+	hasUniqueIndexes, err := restore.restoreUniqueIndexes(intent.DB, intent.C)
+	if err != nil {
+		return Result{Err: err}
+	}
+
 	var result Result
 	if intent.BSONFile != nil {
 		err = intent.BSONFile.Open()
@@ -391,7 +383,8 @@ func (restore *MongoRestore) RestoreIntent(intent *intents.Intent) Result {
 		bsonSource := db.NewDecodedBSONSource(db.NewBSONSource(intent.BSONFile))
 		defer bsonSource.Close()
 
-		result = restore.RestoreCollectionToDB(intent.DB, intent.DataCollection(), bsonSource, intent.BSONFile, intent.Size, intent.Type)
+		result = restore.restoreCollectionToDB(intent.DB, intent.DataCollection(), bsonSource, intent.BSONFile, intent.Size, intent.Type,
+			restore.OutputOptions.StopOnError || hasUniqueIndexes)
 		if result.Err != nil {
 			result.Err = fmt.Errorf("error restoring from %v: %v", intent.Location, result.Err)
 			return result
@@ -457,6 +450,12 @@ func fixDottedHashedIndex(index *idx.IndexDocument) {
 // Returns the number of documents restored and any errors that occurred.
 func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 	bsonSource *db.DecodedBSONSource, file PosReader, fileSize int64, collectionType string) Result {
+	return restore.restoreCollectionToDB(dbName, colName, bsonSource, file, fileSize, collectionType,
+		restore.OutputOptions.StopOnError)
+}
+
+func (restore *MongoRestore) restoreCollectionToDB(dbName, colName string,
+	bsonSource *db.DecodedBSONSource, file PosReader, fileSize int64, collectionType string, stopOnError bool) Result {
 
 	var termErr error
 	session, err := restore.SessionProvider.GetSession()
@@ -526,7 +525,7 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 				insertResult := NewResultFromBulkResult(bulk.InsertRaw(rawDoc))
 				result.combineWith(insertResult)
 				collectionProgress.addResult(insertResult)
-				result.Err = db.FilterError(restore.OutputOptions.StopOnError, result.Err)
+				result.Err = db.FilterError(stopOnError, result.Err)
 				if result.Err != nil {
 					resultChan <- result
 					return
@@ -537,7 +536,7 @@ func (restore *MongoRestore) RestoreCollectionToDB(dbName, colName string,
 			flushResult := NewResultFromBulkResult(bulk.Flush())
 			result.combineWith(flushResult)
 			collectionProgress.addResult(flushResult)
-			resultChan <- result.withErr(db.FilterError(restore.OutputOptions.StopOnError, result.Err))
+			resultChan <- result.withErr(db.FilterError(stopOnError, result.Err))
 			return
 		}(i + 1)
 

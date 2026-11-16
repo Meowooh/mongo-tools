@@ -12,6 +12,44 @@ MongoDB Tools
 
 Report any bugs, improvements, or new feature requests at https://jira.mongodb.org/browse/TOOLS
 
+EloqDoc / TiDoc index restoration
+--------------------------------
+
+This fork restores unique secondary indexes **before** it imports each collection's data.
+EloqDoc cannot create a new unique secondary index on a non-empty collection.
+Other secondary indexes remain in the final index phase.
+The collection creation path still handles the `_id` index.
+
+| Options | Unique secondary indexes | Other secondary indexes |
+| --- | --- | --- |
+| Default | Before data | After data |
+| `--noIndexRestore` | **Before data** | Not restored |
+| `--indexAfter` | After data (original behavior) | After data |
+| `--indexAfter --noIndexRestore` | Not restored | Not restored |
+
+The flag `--indexAfter` is case-sensitive.
+Unlike the original tools, `--noIndexRestore` alone does **not** skip unique secondary indexes.
+Use both flags to import data without restoring any secondary indexes.
+Neither flag removes indexes that already exist on the target.
+
+The tool reads index definitions from the existing dump metadata, including archive metadata.
+It does not scan the data twice or infer index definitions from documents.
+A BSON file without index metadata cannot supply unique index definitions.
+
+For each collection, the tool applies an explicit `--drop` first, then creates or reuses the collection.
+It creates the unique secondary indexes before it opens the collection's BSON input.
+An equivalent unique index that already exists needs no new build.
+A failed index creation stops that collection before data import.
+The tool never automatically drops a non-empty collection to resolve a missing unique index.
+
+If the tool restores unique indexes before data, insertion errors for that collection are fatal, including duplicate-key errors.
+The restore can leave partial data after an error. It does not roll back earlier writes.
+Keep other writers stopped throughout the restore, including during index creation.
+
+`--oplogReplay` requires `--indexAfter`, even with `--noIndexRestore`.
+Oplog replay can change index definitions and requires separate support for the new restore order.
+Selecting `--indexAfter` does not remove EloqDoc's restriction on new unique indexes in non-empty collections.
+
 Building Tools
 ---------------
 

@@ -178,6 +178,10 @@ func (restore *MongoRestore) Close() {
 
 // ParseAndValidateOptions returns a non-nil error if user-supplied options are invalid.
 func (restore *MongoRestore) ParseAndValidateOptions() error {
+	if restore.InputOptions.OplogReplay && !restore.OutputOptions.IndexAfter {
+		return fmt.Errorf("cannot use --oplogReplay with pre-data unique index restoration. Use --indexAfter for the original restore order")
+	}
+
 	// Can't use option pkg defaults for --objcheck because it's two separate flags,
 	// and we need to be able to see if they're both being used. We default to
 	// true here and then see if noobjcheck is enabled.

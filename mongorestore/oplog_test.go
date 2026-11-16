@@ -147,6 +147,7 @@ func TestOplogRestore(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/oplogdump",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -186,6 +187,7 @@ func TestOplogRestoreWithDuplicateIndexKeys(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/duplicate_index_key_with_oplog",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -222,6 +224,7 @@ func TestOplogRestoreUpdatesIndexCatalog(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/coll_with_index",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -262,6 +265,7 @@ func TestOplogRestoreUpdatesIndexCatalog(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/coll_with_index",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -345,6 +349,7 @@ func TestOplogRestoreUpdatesIndexCatalog(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/coll_with_ttl_index",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -386,6 +391,7 @@ func TestOplogRestoreUpdatesIndexCatalog(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/coll_with_ttl_index",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -435,6 +441,7 @@ func TestOplogRestoreUpdatesIndexCatalog(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/coll_with_ttl_index",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -507,6 +514,7 @@ func TestOplogRestoreMaxDocumentSize(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/oplogdumpmaxsize",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,
@@ -589,6 +597,7 @@ func TestOplogRestoreTools2002(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/tools-2002",
 			OplogReplayOption,
+			IndexAfterOption,
 			NumParallelCollectionsOption, "1",
 			NumInsertionWorkersOption, "1",
 			DropOption,

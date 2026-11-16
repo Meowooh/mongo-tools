@@ -79,6 +79,7 @@ func TestMongorestoreTxns(t *testing.T) {
 	Convey("With a test MongoRestore", t, func() {
 		args := []string{
 			OplogReplayOption,
+			IndexAfterOption,
 			DropOption,
 			dumpPath,
 		}

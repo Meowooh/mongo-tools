@@ -1340,6 +1340,7 @@ func TestSkipSystemCollections(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/oplog_partial_skips",
 			OplogReplayOption,
+			IndexAfterOption,
 			DropOption,
 		}
 
@@ -1408,6 +1409,7 @@ func TestSkipStartAndAbortIndexBuild(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/oplog_ignore_index",
 			OplogReplayOption,
+			IndexAfterOption,
 			DropOption,
 		}
 
@@ -1475,6 +1477,7 @@ func TestCommitIndexBuild(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/commit_indexes_build",
 			OplogReplayOption,
+			IndexAfterOption,
 			DropOption,
 		}
 
@@ -1552,6 +1555,7 @@ func TestCreateIndexes(t *testing.T) {
 		args := []string{
 			DirectoryOption, "testdata/create_indexes",
 			OplogReplayOption,
+			IndexAfterOption,
 			DropOption,
 		}
 
@@ -1760,7 +1764,7 @@ func TestRestoreTimeseriesCollections(t *testing.T) {
 		})
 
 		Convey("restoring a timeseries collection with --oplogReplay should apply changes to the system.buckets collection correctly", func() {
-			args = append(args, DirectoryOption, "testdata/timeseries_tests/ts_dump_with_oplog", OplogReplayOption)
+			args = append(args, DirectoryOption, "testdata/timeseries_tests/ts_dump_with_oplog", OplogReplayOption, IndexAfterOption)
 			restore, err := getRestoreWithArgs(args...)
 			So(err, ShouldBeNil)
 
@@ -2172,6 +2176,7 @@ func testRestoreClusteredIndexFromOplog(t *testing.T, indexName string) {
 		restore, err := getRestoreWithArgs(
 			DropOption,
 			OplogReplayOption,
+			IndexAfterOption,
 			dir,
 		)
 		require.NoError(err)
@@ -2595,6 +2600,7 @@ func testRestoreColumnstoreIndexFromOplog(t *testing.T) {
 		restore, err := getRestoreWithArgs(
 			DropOption,
 			OplogReplayOption,
+			IndexAfterOption,
 			dir,
 		)
 		require.NoError(err)
